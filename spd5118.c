@@ -263,12 +263,14 @@ static inline bool spd5118_parity8(u8 w)
 	return (0x6996 >> (w & 0xf)) & 1;
 }
 
-static bool spd5118_vendor_valid(u16 reg)
+/*
+ * Bank and vendor id are 8-bit fields with seven data bits and odd parity.
+ * Vendor IDs 0 and 0x7f are invalid.
+ * See Jedec standard JEP106BJ for details and a list of assigned vendor IDs.
+ */
+static bool spd5118_vendor_valid(u8 bank, u8 id)
 {
-	u8 pfx = reg & 0xff;
-	u8 id = reg >> 8;
-
-	if (!spd5118_parity8(pfx) || !spd5118_parity8(id))
+	if (!spd5118_parity8(bank) || !spd5118_parity8(id))
 		return false;
 
 	id &= 0x7f;
@@ -290,7 +292,7 @@ static int spd5118_detect(struct i2c_client *client, struct i2c_board_info *info
 		return -ENODEV;
 
 	regval = i2c_smbus_read_word_data(client, SPD5118_REG_VENDOR);
-	if (regval < 0 || !spd5118_vendor_valid(regval))
+	if (regval < 0 || !spd5118_vendor_valid(regval & 0xff, regval >> 8))
 		return -ENODEV;
 
 	regval = i2c_smbus_read_byte_data(client, SPD5118_REG_CAPABILITY);
@@ -380,7 +382,7 @@ static const struct regmap_config spd5118_regmap_config = {
 static int spd5118_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
-	unsigned int regval, revision, vendor;
+	unsigned int regval, revision, vendor, bank;
 	struct device *hwmon_dev;
 	struct regmap *regmap;
 	int err;
@@ -399,14 +401,13 @@ static int spd5118_probe(struct i2c_client *client)
 	if (err)
 		return err;
 
-	err = regmap_read(regmap, SPD5118_REG_VENDOR, &vendor);
+	err = regmap_read(regmap, SPD5118_REG_VENDOR, &bank);
 	if (err)
 		return err;
-	err = regmap_read(regmap, SPD5118_REG_VENDOR + 1, &regval);
+	err = regmap_read(regmap, SPD5118_REG_VENDOR + 1, &vendor);
 	if (err)
 		return err;
-	vendor |= regval << 8;
-	if (!spd5118_vendor_valid(vendor))
+	if (!spd5118_vendor_valid(bank, vendor))
 		return -ENODEV;
 
 	hwmon_dev = devm_hwmon_device_register_with_info(dev, "spd5118",
@@ -420,8 +421,8 @@ static int spd5118_probe(struct i2c_client *client)
 	 *   MR2 bits [5:4]: Major revision, 1..4
 	 *   MR2 bits [3:1]: Minor revision, 0..8? Probably a typo, assume 1..8
 	 */
-	dev_info(dev, "DDR5 temperature sensor: vendor 0x%04x revision %d.%d\n",
-		 vendor, ((revision >> 4) & 0x03) + 1, ((revision >> 1) & 0x07) + 1);
+	dev_info(dev, "DDR5 temperature sensor: vendor 0x%02x:0x%02x revision %d.%d\n",
+		 bank & 0x7f, vendor, ((revision >> 4) & 0x03) + 1, ((revision >> 1) & 0x07) + 1);
 
 	return 0;
 }
