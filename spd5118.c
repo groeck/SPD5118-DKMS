@@ -102,36 +102,6 @@ static int spd5118_read_temp(struct regmap *regmap, u32 attr, long *val)
 	return 0;
 }
 
-static int spd5118_write_temp(struct regmap *regmap, u32 attr, long val)
-{
-	u8 regval[2];
-	u16 temp;
-	int reg;
-
-	switch (attr) {
-	case hwmon_temp_max:
-		reg = SPD5118_REG_TEMP_MAX;
-		break;
-	case hwmon_temp_min:
-		reg = SPD5118_REG_TEMP_MIN;
-		break;
-	case hwmon_temp_crit:
-		reg = SPD5118_REG_TEMP_CRIT;
-		break;
-	case hwmon_temp_lcrit:
-		reg = SPD5118_REG_TEMP_LCRIT;
-		break;
-	default:
-		return -EOPNOTSUPP;
-	}
-
-	temp = spd5118_temp_to_reg(val);
-	regval[0] = temp & 0x7f;
-	regval[1] = temp >> 8;
-
-	return regmap_bulk_write(regmap, reg, regval, 2);
-}
-
 static int spd5118_read_alarm(struct regmap *regmap, u32 attr, long *val)
 {
 	unsigned int mask, regval;
@@ -163,6 +133,18 @@ static int spd5118_read_alarm(struct regmap *regmap, u32 attr, long *val)
 	return 0;
 }
 
+static int spd5118_read_enable(struct regmap *regmap, u32 attr, long *val)
+{
+	u32 regval;
+	int err;
+
+	err = regmap_read(regmap, SPD5118_REG_TEMP_CONFIG, &regval);
+	if (err < 0)
+		return err;
+	*val = !(regval & SPD5118_TS_DISABLE);
+	return 0;
+}
+
 static int spd5118_read(struct device *dev, enum hwmon_sensor_types type,
 			u32 attr, int channel, long *val)
 {
@@ -183,9 +165,51 @@ static int spd5118_read(struct device *dev, enum hwmon_sensor_types type,
 	case hwmon_temp_crit_alarm:
 	case hwmon_temp_lcrit_alarm:
 		return spd5118_read_alarm(regmap, attr, val);
+	case hwmon_temp_enable:
+		return spd5118_read_enable(regmap, attr, val);
 	default:
 		return -EOPNOTSUPP;
 	}
+}
+
+static int spd5118_write_temp(struct regmap *regmap, u32 attr, long val)
+{
+	u8 regval[2];
+	u16 temp;
+	int reg;
+
+	switch (attr) {
+	case hwmon_temp_max:
+		reg = SPD5118_REG_TEMP_MAX;
+		break;
+	case hwmon_temp_min:
+		reg = SPD5118_REG_TEMP_MIN;
+		break;
+	case hwmon_temp_crit:
+		reg = SPD5118_REG_TEMP_CRIT;
+		break;
+	case hwmon_temp_lcrit:
+		reg = SPD5118_REG_TEMP_LCRIT;
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	temp = spd5118_temp_to_reg(val);
+	regval[0] = temp & 0x7f;
+	regval[1] = temp >> 8;
+
+	return regmap_bulk_write(regmap, reg, regval, 2);
+}
+
+static int spd5118_write_enable(struct regmap *regmap, u32 attr, long val)
+{
+	if (val && val != 1)
+		return -EINVAL;
+
+	return regmap_update_bits(regmap, SPD5118_REG_TEMP_CONFIG,
+				  SPD5118_TS_DISABLE,
+				  val ? 0 : SPD5118_TS_DISABLE);
 }
 
 static int spd5118_write(struct device *dev, enum hwmon_sensor_types type,
@@ -202,6 +226,8 @@ static int spd5118_write(struct device *dev, enum hwmon_sensor_types type,
 	case hwmon_temp_crit:
 	case hwmon_temp_lcrit:
 		return spd5118_write_temp(regmap, attr, val);
+	case hwmon_temp_enable:
+		return spd5118_write_enable(regmap, attr, val);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -219,7 +245,7 @@ static umode_t spd5118_is_visible(const void *_data, enum hwmon_sensor_types typ
 	case hwmon_temp_min:
 	case hwmon_temp_max:
 	case hwmon_temp_crit:
-	case hwmon_temp_lcrit:
+	case hwmon_temp_enable:
 		return 0644;
 	case hwmon_temp_min_alarm:
 	case hwmon_temp_max_alarm:
@@ -295,7 +321,8 @@ static const struct hwmon_channel_info *spd5118_info[] = {
 			   HWMON_T_LCRIT | HWMON_T_LCRIT_ALARM |
 			   HWMON_T_MIN | HWMON_T_MIN_ALARM |
 			   HWMON_T_MAX | HWMON_T_MAX_ALARM |
-			   HWMON_T_CRIT | HWMON_T_CRIT_ALARM),
+			   HWMON_T_CRIT | HWMON_T_CRIT_ALARM |
+			   HWMON_T_ENABLE),
 	NULL
 };
 
