@@ -17,6 +17,7 @@
 #include <linux/i2c.h>
 #include <linux/hwmon.h>
 #include <linux/module.h>
+#include <linux/regmap.h>
 #include <linux/units.h>
 
 /* Addresses to scan */
@@ -65,9 +66,11 @@ static u16 spd5118_temp_to_reg(int temp)
 	return ((temp / SPD5118_TEMP_UNIT) & 0x7ff) << 2;
 }
 
-static int spd5118_read_temp(struct i2c_client *client, u32 attr, long *val)
+static int spd5118_read_temp(struct regmap *regmap, u32 attr, long *val)
 {
-	int reg, regval;
+	int reg, err;
+	u8 regval[2];
+	u16 temp;
 
 	switch (attr) {
 	case hwmon_temp_input:
@@ -89,18 +92,21 @@ static int spd5118_read_temp(struct i2c_client *client, u32 attr, long *val)
 		return -EOPNOTSUPP;
 	}
 
-	regval = i2c_smbus_read_word_data(client, reg);
-	if (regval < 0)
-		return regval;
+	err = regmap_bulk_read(regmap, reg, regval, 2);
+	if (err)
+		return err;
 
-	*val = spd5118_temp_from_reg(regval);
+	temp = (regval[1] << 8) | regval[0];
+
+	*val = spd5118_temp_from_reg(temp);
 	return 0;
 }
 
-static int spd5118_write_temp(struct i2c_client *client, u32 attr, long val)
+static int spd5118_write_temp(struct regmap *regmap, u32 attr, long val)
 {
-	int reg, ret;
-	u16 regval;
+	u8 regval[2];
+	u16 temp;
+	int reg;
 
 	switch (attr) {
 	case hwmon_temp_max:
@@ -119,14 +125,17 @@ static int spd5118_write_temp(struct i2c_client *client, u32 attr, long val)
 		return -EOPNOTSUPP;
 	}
 
-	regval = spd5118_temp_to_reg(val);
-	ret = i2c_smbus_write_word_data(client, reg, regval);
-	return ret;
+	temp = spd5118_temp_to_reg(val);
+	regval[0] = temp & 0x7f;
+	regval[1] = temp >> 8;
+
+	return regmap_bulk_write(regmap, reg, regval, 2);
 }
 
-static int spd5118_read_alarm(struct i2c_client *client, u32 attr, long *val)
+static int spd5118_read_alarm(struct regmap *regmap, u32 attr, long *val)
 {
-	int mask, regval;
+	unsigned int mask, regval;
+	int err;
 
 	switch (attr) {
 	case hwmon_temp_max_alarm:
@@ -145,20 +154,19 @@ static int spd5118_read_alarm(struct i2c_client *client, u32 attr, long *val)
 		return -EOPNOTSUPP;
 	}
 
-	regval = i2c_smbus_read_byte_data(client, SPD5118_REG_TEMP_STATUS);
-	if (regval < 0)
-		return regval;
+	err = regmap_read(regmap, SPD5118_REG_TEMP_STATUS, &regval);
+	if (err < 0)
+		return err;
 	*val = !!(regval & mask);
 	if (*val)
-		return i2c_smbus_write_byte_data(client, SPD5118_REG_TEMP_CLR,
-						 mask);
+		return regmap_write(regmap, SPD5118_REG_TEMP_CLR, mask);
 	return 0;
 }
 
 static int spd5118_read(struct device *dev, enum hwmon_sensor_types type,
 			u32 attr, int channel, long *val)
 {
-	struct i2c_client *client = dev_get_drvdata(dev);
+	struct regmap *regmap = dev_get_drvdata(dev);
 
 	if (type != hwmon_temp)
 		return -EOPNOTSUPP;
@@ -169,12 +177,12 @@ static int spd5118_read(struct device *dev, enum hwmon_sensor_types type,
 	case hwmon_temp_min:
 	case hwmon_temp_crit:
 	case hwmon_temp_lcrit:
-		return spd5118_read_temp(client, attr, val);
+		return spd5118_read_temp(regmap, attr, val);
 	case hwmon_temp_max_alarm:
 	case hwmon_temp_min_alarm:
 	case hwmon_temp_crit_alarm:
 	case hwmon_temp_lcrit_alarm:
-		return spd5118_read_alarm(client, attr, val);
+		return spd5118_read_alarm(regmap, attr, val);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -183,7 +191,7 @@ static int spd5118_read(struct device *dev, enum hwmon_sensor_types type,
 static int spd5118_write(struct device *dev, enum hwmon_sensor_types type,
 			 u32 attr, int channel, long val)
 {
-	struct i2c_client *client = dev_get_drvdata(dev);
+	struct regmap *regmap = dev_get_drvdata(dev);
 
 	if (type != hwmon_temp)
 		return -EOPNOTSUPP;
@@ -193,7 +201,7 @@ static int spd5118_write(struct device *dev, enum hwmon_sensor_types type,
 	case hwmon_temp_min:
 	case hwmon_temp_crit:
 	case hwmon_temp_lcrit:
-		return spd5118_write_temp(client, attr, val);
+		return spd5118_write_temp(regmap, attr, val);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -302,28 +310,80 @@ static const struct hwmon_chip_info spd5118_chip_info = {
 	.info = spd5118_info,
 };
 
+static bool spd5118_writeable_reg(struct device *dev, unsigned int reg)
+{
+	switch (reg) {
+	case SPD5118_REG_TEMP_CLR:
+	case SPD5118_REG_TEMP_CONFIG:
+	case SPD5118_REG_TEMP_MAX:
+	case SPD5118_REG_TEMP_MAX + 1:
+	case SPD5118_REG_TEMP_MIN:
+	case SPD5118_REG_TEMP_MIN + 1:
+	case SPD5118_REG_TEMP_CRIT:
+	case SPD5118_REG_TEMP_CRIT + 1:
+	case SPD5118_REG_TEMP_LCRIT:
+	case SPD5118_REG_TEMP_LCRIT + 1:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool spd5118_volatile_reg(struct device *dev, unsigned int reg)
+{
+	switch (reg) {
+	case SPD5118_REG_TEMP:
+	case SPD5118_REG_TEMP + 1:
+	case SPD5118_REG_TEMP_STATUS:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static const struct regmap_config spd5118_regmap_config = {
+	.reg_bits = 8,
+	.val_bits = 8,
+	.max_register = SPD5118_REG_TEMP_STATUS,
+	.writeable_reg = spd5118_writeable_reg,
+	.volatile_reg = spd5118_volatile_reg,
+	.cache_type = REGCACHE_MAPLE,
+};
+
 static int spd5118_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
+	unsigned int regval, revision, vendor;
 	struct device *hwmon_dev;
-	int regval, revision, vendor;
+	struct regmap *regmap;
+	int err;
 
-	regval = i2c_smbus_read_byte_data(client, SPD5118_REG_CAPABILITY);
-	if (regval < 0)
-		return -ENODEV;
+	regmap = devm_regmap_init_i2c(client, &spd5118_regmap_config);
+	if (IS_ERR(regmap))
+		return dev_err_probe(dev, PTR_ERR(regmap), "regmap init failed\n");
+
+	err = regmap_read(regmap, SPD5118_REG_CAPABILITY, &regval);
+	if (err)
+		return err;
 	if (!(regval & SPD5118_CAP_TS_SUPPORT))
 		return -ENODEV;
 
-	revision = i2c_smbus_read_byte_data(client, SPD5118_REG_REVISION);
-	if (revision < 0)
-		return -ENODEV;
+	err = regmap_read(regmap, SPD5118_REG_REVISION, &revision);
+	if (err)
+		return err;
 
-	vendor = i2c_smbus_read_word_data(client, SPD5118_REG_VENDOR);
-	if (vendor < 0 || !spd5118_vendor_valid(vendor))
+	err = regmap_read(regmap, SPD5118_REG_VENDOR, &vendor);
+	if (err)
+		return err;
+	err = regmap_read(regmap, SPD5118_REG_VENDOR + 1, &regval);
+	if (err)
+		return err;
+	vendor |= regval << 8;
+	if (!spd5118_vendor_valid(vendor))
 		return -ENODEV;
 
 	hwmon_dev = devm_hwmon_device_register_with_info(dev, "spd5118",
-							 client, &spd5118_chip_info,
+							 regmap, &spd5118_chip_info,
 							 NULL);
 	if (IS_ERR(hwmon_dev))
 		return PTR_ERR(hwmon_dev);
