@@ -1,13 +1,21 @@
+TARGET		:= $(shell uname -r)
+HOME=$(shell pwd)
+KERNEL_MODULES	:= /lib/modules/$(TARGET)
+KERNEL_BUILD	:= /usr/src/linux-headers-$(TARGET)
 
-DRIVER=spd5118
-VERSION=0.1
+SYSTEM_MAP	:= /boot/System.map-$(TARGET)
 
-obj-m = $(DRIVER).o
+DRIVER := spd5118
 
-DKMS_FLAGS= -m $(DRIVER) -v $(VERSION)
-DKMS_ROOT_PATH=/usr/src/$(DRIVER)-$(VERSION)
+# Directory below /lib/modules/$(TARGET)/kernel into which to install
+# the module:
+MOD_SUBDIR = drivers/hwmon
 
-KERNEL_BUILD=/lib/modules/`uname -r`/build
+obj-m	:= $(DRIVER).o
+
+MAKEFLAGS += --no-print-directory
+
+.PHONY: all install modules modules_install clean
 
 all: modules
 
@@ -17,16 +25,8 @@ modules:
 clean:
 	@$(MAKE) -C $(KERNEL_BUILD) M=$(PWD) $@
 
-dkms:
-	@mkdir $(DKMS_ROOT_PATH)
-	@cp `pwd`/dkms.conf $(DKMS_ROOT_PATH)
-	@cp `pwd`/Makefile $(DKMS_ROOT_PATH)
-	@cp `pwd`/$(DRIVER).c $(DKMS_ROOT_PATH)
-	@dkms add $(DKMS_FLAGS)
-	@dkms build $(DKMS_FLAGS)
-	@dkms install --force $(DKMS_FLAGS)
-	@modprobe $(DRIVER)
+install: modules_install
 
-dkms_clean:
-	@dkms remove $(DKMS_FLAGS) --all
-	@rm -rf $(DKMS_ROOT_PATH)
+modules_install:
+	cp $(DRIVER).ko $(KERNEL_MODULES)/kernel/$(MOD_SUBDIR)
+	depmod -a -F $(SYSTEM_MAP) $(TARGET)

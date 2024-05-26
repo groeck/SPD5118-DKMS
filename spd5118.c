@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * spd5118.c - driver for Jedec 5118 compliant temperature sensors
+ * Driver for Jedec 5118 compliant temperature sensors
  *
- * Copyright (c) 2023 René Rebe, ExactCODE GmbH; Germany.
+ * Derived from https://github.com/Steve-Tech/SPD5118-DKMS
+ * Originally from T/2 driver at https://t2sde.org/packages/linux
+ *	Copyright (c) 2023 René Rebe, ExactCODE GmbH; Germany.
  *
  * Inspired by ee1004.c and jc42.c.
  *
- * SPD5118 compliant temperature sensors are typically used on memory modules.
+ * SPD5118 compliant temperature sensors are typically used on DDR5
+ * memory modules.
  */
 
 #include <linux/bitops.h>
@@ -69,15 +72,6 @@ static bool enable_alarm_write;
 module_param(enable_alarm_write, bool, false);
 MODULE_PARM_DESC(enable_alarm_write, "Enable resetting temperature alarms");
 
-
-/* Each client has this additional data */
-struct spd5118_data {
-	struct mutex update_lock;	/* protect register access */
-	int current_page;
-	u16 vendor;
-	u8 revision;
-};
-
 static bool spd5118_vendor_valid(u16 reg)
 {
 	u8 pfx = reg & 0xff;
@@ -105,7 +99,6 @@ static u16 spd5118_temp_to_reg(int temp)
 
 static int spd5118_read_temp(struct i2c_client *client, u32 attr, long *val)
 {
-	struct spd5118_data *data = i2c_get_clientdata(client);
 	int reg, regval;
 
 	switch (attr) {
@@ -128,9 +121,7 @@ static int spd5118_read_temp(struct i2c_client *client, u32 attr, long *val)
 		return -EOPNOTSUPP;
 	}
 
-	mutex_lock(&data->update_lock);
 	regval = i2c_smbus_read_word_data(client, reg);
-	mutex_unlock(&data->update_lock);
 	if (regval < 0)
 		return regval;
 
@@ -140,12 +131,8 @@ static int spd5118_read_temp(struct i2c_client *client, u32 attr, long *val)
 
 static int spd5118_write_temp(struct i2c_client *client, u32 attr, long val)
 {
-	struct spd5118_data *data = i2c_get_clientdata(client);
 	int reg, ret;
 	u16 regval;
-
-	if (WARN_ON(!enable_temp_write))
-		return -EOPNOTSUPP;
 
 	switch (attr) {
 	case hwmon_temp_max:
@@ -165,15 +152,12 @@ static int spd5118_write_temp(struct i2c_client *client, u32 attr, long val)
 	}
 
 	regval = spd5118_temp_to_reg(val);
-	mutex_lock(&data->update_lock);
 	ret = i2c_smbus_write_word_data(client, reg, regval);
-	mutex_unlock(&data->update_lock);
 	return ret;
 }
 
 static int spd5118_read_alarm(struct i2c_client *client, u32 attr, long *val)
 {
-	struct spd5118_data *data = i2c_get_clientdata(client);
 	int mask, regval;
 
 	switch (attr) {
@@ -193,9 +177,7 @@ static int spd5118_read_alarm(struct i2c_client *client, u32 attr, long *val)
 		return -EOPNOTSUPP;
 	}
 
-	mutex_lock(&data->update_lock);
 	regval = i2c_smbus_read_byte_data(client, SPD5118_REG_TEMP_STATUS);
-	mutex_unlock(&data->update_lock);
 	if (regval < 0)
 		return regval;
 	*val = !!(regval & mask);
@@ -204,12 +186,7 @@ static int spd5118_read_alarm(struct i2c_client *client, u32 attr, long *val)
 
 static int spd5118_clear_alarm(struct i2c_client *client, u32 attr)
 {
-	struct spd5118_data *data = i2c_get_clientdata(client);
-	int ret;
 	u8 regval;
-
-	if (WARN_ON(!enable_alarm_write))
-		return -EOPNOTSUPP;
 
 	switch (attr) {
 	case hwmon_temp_max_alarm:
@@ -228,14 +205,11 @@ static int spd5118_clear_alarm(struct i2c_client *client, u32 attr)
 		return -EOPNOTSUPP;
 	}
 
-	mutex_lock(&data->update_lock);
-	ret = i2c_smbus_write_byte_data(client, SPD5118_REG_TEMP_CLR, regval);
-	mutex_unlock(&data->update_lock);
-	return ret;
+	return i2c_smbus_write_byte_data(client, SPD5118_REG_TEMP_CLR, regval);
 }
 
 static int spd5118_read(struct device *dev, enum hwmon_sensor_types type,
-		     u32 attr, int channel, long *val)
+			u32 attr, int channel, long *val)
 {
 	struct i2c_client *client = dev_get_drvdata(dev);
 
@@ -260,7 +234,7 @@ static int spd5118_read(struct device *dev, enum hwmon_sensor_types type,
 }
 
 static int spd5118_write(struct device *dev, enum hwmon_sensor_types type,
-		      u32 attr, int channel, long val)
+			 u32 attr, int channel, long val)
 {
 	struct i2c_client *client = dev_get_drvdata(dev);
 
@@ -286,7 +260,7 @@ static int spd5118_write(struct device *dev, enum hwmon_sensor_types type,
 }
 
 static umode_t spd5118_is_visible(const void *_data, enum hwmon_sensor_types type,
-			       u32 attr, int channel)
+				  u32 attr, int channel)
 {
 	if (type != hwmon_temp)
 		return 0;
@@ -308,130 +282,6 @@ static umode_t spd5118_is_visible(const void *_data, enum hwmon_sensor_types typ
 		return 0;
 	}
 }
-
-static ssize_t
-revision_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct spd5118_data *data = dev_get_drvdata(dev);
-	/* From JESD300-5B
-	 *   MR2 bits [5:4]: Major revision, 1..4
-	 *   MR2 bits [3:1]: Minor revision, 0..8? Probably a typo.
-	 */
-	return sprintf(buf, "%d.%d\n", 1 + ((data->revision >> 4) & 3), (data->revision >> 1) & 7);
-}
-
-static DEVICE_ATTR_RO(revision);
-
-static ssize_t
-pmic_vendor_id_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct spd5118_data *data = dev_get_drvdata(dev);
-	u8 pfx = data->vendor & 0x7f;
-	u8 id = (data->vendor >> 8) & 0x7f;
-	int n = 0;
-
-	while (pfx--) {
-		n += 3;
-		*buf++ = '7';
-		*buf++ = 'F';
-		*buf++ = ' ';
-	}
-	/* Low byte is number of 7F prefixes of the JEP106 ID */
-	return n + sprintf(buf, "%02X\n", id);
-}
-
-static DEVICE_ATTR_RO(pmic_vendor_id);
-
-static struct attribute *spd5118_attrs[] = {
-	&dev_attr_revision.attr,
-	&dev_attr_pmic_vendor_id.attr,
-	NULL,
-};
-
-static int spd5118_set_current_page(struct i2c_client *client, int page)
-{
-	struct device *dev = &client->dev;
-	struct spd5118_data *data = dev_get_drvdata(dev);
-	int ret;
-
-	if (page == data->current_page)
-		return 0;
-
-	ret = i2c_smbus_write_byte_data(client, SPD5118_REG_I2C_LEGACY_MODE, page);
-	if (ret < 0) {
-		dev_err(dev, "Failed to select page %d (%d)\n", page, ret);
-		return ret;
-	}
-
-	dev_dbg(dev, "Selected page %d\n", page);
-	data->current_page = page;
-
-	return 0;
-}
-
-static ssize_t spd5118_eeprom_read(struct i2c_client *client, char *buf,
-				  unsigned int offset, size_t count)
-{
-	int status, page;
-
-	page = offset >> SPD5118_PAGE_SHIFT;
-	offset &= (1 << SPD5118_PAGE_SHIFT) - 1;
-
-	status = spd5118_set_current_page(client, page);
-	if (status)
-		return status;
-
-	/* Can't cross page boundaries */
-	if (offset + count > SPD5118_PAGE_SIZE)
-		count = SPD5118_PAGE_SIZE - offset;
-
-	return i2c_smbus_read_i2c_block_data_or_emulated(client, SPD5118_EEPROM_BASE + offset, count, buf);
-}
-
-static ssize_t eeprom_read(struct file *filp, struct kobject *kobj,
-			   struct bin_attribute *bin_attr,
-			   char *buf, loff_t off, size_t count)
-{
-	struct i2c_client *client = kobj_to_i2c_client(kobj);
-	struct device *dev = &client->dev;
-	struct spd5118_data *data = dev_get_drvdata(dev);
-	size_t requested = count;
-	int ret = 0;
-
-	mutex_lock(&data->update_lock);
-
-	while (count) {
-		ret = spd5118_eeprom_read(client, buf, off, count);
-		if (ret < 0)
-			goto out;
-
-		buf += ret;
-		off += ret;
-		count -= ret;
-	}
-out:
-
-	mutex_unlock(&data->update_lock);
-
-	return ret < 0 ? ret : requested;
-}
-
-static BIN_ATTR_RO(eeprom, SPD5118_EEPROM_SIZE);
-
-static struct bin_attribute *spd5118_bin_attrs[] = {
-	&bin_attr_eeprom,
-	NULL
-};
-
-static const struct attribute_group spd5118_attr_group = {
-	.attrs = spd5118_attrs,
-	.bin_attrs = spd5118_bin_attrs,
-};
-
-static const struct attribute_group *spd5118_groups[] = {
-	&spd5118_attr_group,
-	NULL,
-};
 
 /* Return 0 if detection is successful, -ENODEV otherwise */
 static int spd5118_detect(struct i2c_client *client, struct i2c_board_info *info)
@@ -482,12 +332,14 @@ static int spd5118_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct device *hwmon_dev;
-	unsigned int typ, revision, vendor;
-	struct spd5118_data *data;
+	int typ, revision, vendor;
 
 	typ = i2c_smbus_read_word_swapped(client, SPD5118_REG_TYPE);
+	if (typ < 0)
+		return -ENODEV;
+
 	if (typ != 0x5118) {
-		dev_dbg(dev, "Device type incorrect (%d)\n", typ);
+		dev_dbg(dev, "Device type incorrect (0x%x)\n", typ);
 		return -ENODEV;
 	}
 
@@ -499,25 +351,22 @@ static int spd5118_probe(struct i2c_client *client)
 	if (vendor < 0)
 		return -ENODEV;
 
-	data = devm_kzalloc(dev, sizeof(struct spd5118_data), GFP_KERNEL);
-	if (!data)
-		return -ENOMEM;
-
-	i2c_set_clientdata(client, data);
-
-	mutex_init(&data->update_lock);
-	data->current_page = -1;
-	data->vendor = vendor;
-	data->revision = revision;
-
 	hwmon_dev = devm_hwmon_device_register_with_info(dev, "spd5118",
 							 client, &spd5118_chip_info,
 							 NULL);
-	return PTR_ERR_OR_ZERO(hwmon_dev);
-}
+	if (IS_ERR(hwmon_dev))
+		return PTR_ERR(hwmon_dev);
 
-static void spd5118_remove(struct i2c_client *client)
-{
+	/*
+	 * From JESD300-5B
+	 *   MR2 bits [5:4]: Major revision, 1..4
+	 *   MR2 bits [3:1]: Minor revision, 0..8? Probably a typo.
+	 */
+
+	dev_info(dev, "DDR5 temperature sensor at 0x%x: vendor 0x%04x revision %d.%d\n",
+		 client->addr, vendor, revision >> 4, (revision >> 1) & 0x07);
+
+	return 0;
 }
 
 static const struct i2c_device_id spd5118_id[] = {
@@ -535,14 +384,12 @@ MODULE_DEVICE_TABLE(of, spd5118_of_ids);
 #endif
 
 static struct i2c_driver spd5118_driver = {
-	.class		= I2C_CLASS_SPD | I2C_CLASS_HWMON,
+	.class		= I2C_CLASS_HWMON,
 	.driver = {
 		.name	= "spd5118",
-		.dev_groups = spd5118_groups,
 		.of_match_table = of_match_ptr(spd5118_of_ids),
 	},
 	.probe		= spd5118_probe,
-	.remove		= spd5118_remove,
 	.id_table	= spd5118_id,
 	.detect		= spd5118_detect,
 	.address_list	= normal_i2c,
