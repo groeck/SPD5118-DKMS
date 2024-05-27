@@ -56,14 +56,15 @@ static const unsigned short normal_i2c[] = {
 
 static int spd5118_temp_from_reg(u16 reg)
 {
-	reg = sign_extend32(reg >> 2, 11);
-	return reg * SPD5118_TEMP_UNIT;
+	int temp = sign_extend32(reg >> 2, 10);
+
+	return temp * SPD5118_TEMP_UNIT;
 }
 
-static u16 spd5118_temp_to_reg(int temp)
+static u16 spd5118_temp_to_reg(long temp)
 {
 	temp = clamp_val(temp, SPD5118_TEMP_RANGE_MIN, SPD5118_TEMP_RANGE_MAX);
-	return ((temp / SPD5118_TEMP_UNIT) & 0x7ff) << 2;
+	return (DIV_ROUND_CLOSEST(temp, SPD5118_TEMP_UNIT) & 0x7ff) << 2;
 }
 
 static int spd5118_read_temp(struct regmap *regmap, u32 attr, long *val)
@@ -196,7 +197,7 @@ static int spd5118_write_temp(struct regmap *regmap, u32 attr, long val)
 	}
 
 	temp = spd5118_temp_to_reg(val);
-	regval[0] = temp & 0x7f;
+	regval[0] = temp & 0xff;
 	regval[1] = temp >> 8;
 
 	return regmap_bulk_write(regmap, reg, regval, 2);
