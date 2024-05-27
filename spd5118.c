@@ -33,6 +33,7 @@ static const unsigned short normal_i2c[] = {
 #define SPD5118_REG_VENDOR		0x03	/* MR3:MR4 */
 #define SPD5118_REG_CAPABILITY		0x05	/* MR5 */
 #define SPD5118_REG_I2C_LEGACY_MODE	0x0B	/* MR11 */
+#define SPD5118_REG_DEV_CONFIG		0x12	/* MR18 */
 #define SPD5118_REG_TEMP_CLR		0x13	/* MR19 */
 #define SPD5118_REG_TEMP_CONFIG		0x1A	/* MR26 */
 #define SPD5118_REG_TEMP_MAX		0x1c	/* MR28:MR29 */
@@ -48,6 +49,8 @@ static const unsigned short normal_i2c[] = {
 #define SPD5118_TEMP_STATUS_LCRIT	BIT(3)
 
 #define SPD5118_CAP_TS_SUPPORT		BIT(1)	/* temperature sensor support */
+
+#define SPD5118_PEC_ENABLE		BIT(7)	/* PEC enable */
 
 #define SPD5118_TS_DISABLE		BIT(0)	/* temperature sensor disable */
 
@@ -384,6 +387,53 @@ static const struct regmap_config spd5118_regmap_config = {
 	.cache_type = REGCACHE_MAPLE,
 };
 
+static ssize_t pec_show(struct device *dev, struct device_attribute *dummy,
+			char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	return sprintf(buf, "%d\n", !!(client->flags & I2C_CLIENT_PEC));
+}
+
+static ssize_t pec_store(struct device *dev, struct device_attribute *dummy,
+			 const char *buf, size_t count)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct regmap *regmap = i2c_get_clientdata(client);
+	unsigned int val;
+	int err;
+
+	err = kstrtouint(buf, 10, &val);
+	if (err < 0)
+		return err;
+
+	switch (val) {
+	case 0:
+		err = regmap_clear_bits(regmap, SPD5118_REG_DEV_CONFIG, SPD5118_PEC_ENABLE);
+		if (err < 0)
+			return err;
+		client->flags &= ~I2C_CLIENT_PEC;
+		break;
+	case 1:
+		err = regmap_set_bits(regmap, SPD5118_REG_DEV_CONFIG, SPD5118_PEC_ENABLE);
+		if (err < 0)
+			return err;
+		client->flags |= I2C_CLIENT_PEC;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return count;
+}
+
+static DEVICE_ATTR_RW(pec);
+
+static void spd5118_remove_pec(void *dev)
+{
+	device_remove_file(dev, &dev_attr_pec);
+}
+
 static int spd5118_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
@@ -414,6 +464,27 @@ static int spd5118_probe(struct i2c_client *client)
 		return err;
 	if (!spd5118_vendor_valid(bank, vendor))
 		return -ENODEV;
+
+	i2c_set_clientdata(client, regmap);
+
+	/*
+	 * The 'pec' attribute is attached to the i2c device and thus created
+	 * separately. Only create the attribute if the I2C controller supports
+	 * it.
+	 */
+	if (i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_PEC)) {
+		if (regmap_test_bits(regmap, SPD5118_REG_DEV_CONFIG, SPD5118_PEC_ENABLE))
+			client->flags |= I2C_CLIENT_PEC;
+		else
+			client->flags &= ~I2C_CLIENT_PEC;
+
+		err = device_create_file(dev, &dev_attr_pec);
+		if (err)
+			return err;
+		err = devm_add_action_or_reset(dev, spd5118_remove_pec, dev);
+		if (err)
+			return err;
+	}
 
 	hwmon_dev = devm_hwmon_device_register_with_info(dev, "spd5118",
 							 regmap, &spd5118_chip_info,
