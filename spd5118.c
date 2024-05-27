@@ -6,6 +6,8 @@
  * Originally from T/2 driver at https://t2sde.org/packages/linux
  *	Copyright (c) 2023 René Rebe, ExactCODE GmbH; Germany.
  *
+ * Copyright (c) 2024 Guenter Roeck
+ *
  * Inspired by ee1004.c and jc42.c.
  *
  * SPD5118 compliant temperature sensors are typically used on DDR5
@@ -457,5 +459,6 @@ static struct i2c_driver spd5118_driver = {
 module_i2c_driver(spd5118_driver);
 
 MODULE_AUTHOR("René Rebe <rene@exactcode.de>");
+MODULE_AUTHOR("Guenter Roeck <linux@roeck-us.net>");
 MODULE_DESCRIPTION("SPD 5118 driver");
 MODULE_LICENSE("GPL");
