@@ -12,6 +12,7 @@
  * memory modules.
  */
 
+#include <linux/bitops.h>
 #include <linux/bits.h>
 #include <linux/err.h>
 #include <linux/i2c.h>
