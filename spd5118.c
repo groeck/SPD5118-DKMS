@@ -246,6 +246,7 @@ static umode_t spd5118_is_visible(const void *_data, enum hwmon_sensor_types typ
 		return 0444;
 	case hwmon_temp_min:
 	case hwmon_temp_max:
+	case hwmon_temp_lcrit:
 	case hwmon_temp_crit:
 	case hwmon_temp_enable:
 		return 0644;
