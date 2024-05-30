@@ -456,6 +456,11 @@ static int spd5118_suspend(struct device *dev)
 {
 	struct regmap *regmap = dev_get_drvdata(dev);
 
+	regcache_cache_bypass(regmap, true);
+	regmap_update_bits(regmap, SPD5118_REG_TEMP_CONFIG, SPD5118_TS_DISABLE,
+			   SPD5118_TS_DISABLE);
+	regcache_cache_bypass(regmap, false);
+
 	regcache_cache_only(regmap, true);
 	regcache_mark_dirty(regmap);
 
