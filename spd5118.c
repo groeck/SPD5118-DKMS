@@ -33,7 +33,6 @@ static const unsigned short normal_i2c[] = {
 #define SPD5118_REG_VENDOR		0x03	/* MR3:MR4 */
 #define SPD5118_REG_CAPABILITY		0x05	/* MR5 */
 #define SPD5118_REG_I2C_LEGACY_MODE	0x0B	/* MR11 */
-#define SPD5118_REG_DEV_CONFIG		0x12	/* MR18 */
 #define SPD5118_REG_TEMP_CLR		0x13	/* MR19 */
 #define SPD5118_REG_ERROR_CLR		0x14	/* MR20 */
 #define SPD5118_REG_TEMP_CONFIG		0x1A	/* MR26 */
@@ -50,8 +49,6 @@ static const unsigned short normal_i2c[] = {
 #define SPD5118_TEMP_STATUS_LCRIT	BIT(3)
 
 #define SPD5118_CAP_TS_SUPPORT		BIT(1)	/* temperature sensor support */
-
-#define SPD5118_PEC_ENABLE		BIT(7)	/* PEC enable */
 
 #define SPD5118_TS_DISABLE		BIT(0)	/* temperature sensor disable */
 
@@ -220,18 +217,6 @@ static int spd5118_write_enable(struct regmap *regmap, u32 attr, long val)
 				  val ? 0 : SPD5118_TS_DISABLE);
 }
 
-static int spd5118_chip_write(struct regmap *regmap, u32 attr, long val)
-{
-	switch (attr) {
-	case hwmon_chip_pec:
-		return regmap_update_bits(regmap, SPD5118_REG_DEV_CONFIG,
-					  SPD5118_PEC_ENABLE,
-					  val ? SPD5118_PEC_ENABLE : 0);
-	default:
-		return -EOPNOTSUPP;
-	}
-}
-
 static int spd5118_temp_write(struct regmap *regmap, u32 attr, long val)
 {
 	switch (attr) {
@@ -253,8 +238,6 @@ static int spd5118_write(struct device *dev, enum hwmon_sensor_types type,
 	struct regmap *regmap = dev_get_drvdata(dev);
 
 	switch (type) {
-	case hwmon_chip:
-		return spd5118_chip_write(regmap, attr, val);
 	case hwmon_temp:
 		return spd5118_temp_write(regmap, attr, val);
 	default:
@@ -354,7 +337,7 @@ static int spd5118_detect(struct i2c_client *client, struct i2c_board_info *info
 
 static const struct hwmon_channel_info *spd5118_info[] = {
 	HWMON_CHANNEL_INFO(chip,
-			   HWMON_C_REGISTER_TZ | HWMON_C_PEC),
+			   HWMON_C_REGISTER_TZ),
 	HWMON_CHANNEL_INFO(temp,
 			   HWMON_T_INPUT |
 			   HWMON_T_LCRIT | HWMON_T_LCRIT_ALARM |
