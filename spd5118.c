@@ -472,6 +472,9 @@ static int spd5118_resume(struct device *dev)
 	struct regmap *regmap = dev_get_drvdata(dev);
 
 	regcache_cache_only(regmap, false);
+
+	regmap_update_bits(regmap, SPD5118_REG_TEMP_CONFIG, SPD5118_TS_DISABLE, 0);
+
 	return regcache_sync(regmap);
 }
 
