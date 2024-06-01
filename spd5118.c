@@ -26,10 +26,6 @@
 #include <linux/regmap.h>
 #include <linux/units.h>
 
-/* Addresses to scan */
-static const unsigned short normal_i2c[] = {
-	0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, I2C_CLIENT_END };
-
 /* SPD5118 registers. */
 #define SPD5118_REG_TYPE		0x00	/* MR0:MR1 */
 #define SPD5118_REG_REVISION		0x02	/* MR2 */
@@ -312,51 +308,6 @@ static bool spd5118_vendor_valid(u8 bank, u8 id)
 	return id && id != 0x7f;
 }
 
-/* Return 0 if detection is successful, -ENODEV otherwise */
-static int spd5118_detect(struct i2c_client *client, struct i2c_board_info *info)
-{
-	struct i2c_adapter *adapter = client->adapter;
-	int regval;
-
-	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA |
-				     I2C_FUNC_SMBUS_WORD_DATA))
-		return -ENODEV;
-
-	regval = i2c_smbus_read_word_swapped(client, SPD5118_REG_TYPE);
-	if (regval != 0x5118)
-		return -ENODEV;
-
-	regval = i2c_smbus_read_word_data(client, SPD5118_REG_VENDOR);
-	if (regval < 0 || !spd5118_vendor_valid(regval & 0xff, regval >> 8))
-		return -ENODEV;
-
-	regval = i2c_smbus_read_byte_data(client, SPD5118_REG_CAPABILITY);
-	if (regval < 0)
-		return -ENODEV;
-	if (!(regval & SPD5118_CAP_TS_SUPPORT) || (regval & 0xfc))
-		return -ENODEV;
-
-	regval = i2c_smbus_read_byte_data(client, SPD5118_REG_TEMP_CLR);
-	if (regval)
-		return -ENODEV;
-	regval = i2c_smbus_read_byte_data(client, SPD5118_REG_ERROR_CLR);
-	if (regval)
-		return -ENODEV;
-
-	regval = i2c_smbus_read_byte_data(client, SPD5118_REG_REVISION);
-	if (regval < 0 || (regval & 0xc1))
-		return -ENODEV;
-
-	regval = i2c_smbus_read_byte_data(client, SPD5118_REG_TEMP_CONFIG);
-	if (regval < 0)
-		return -ENODEV;
-	if (regval & ~SPD5118_TS_DISABLE)
-		return -ENODEV;
-
-	strscpy(info->type, "spd5118", I2C_NAME_SIZE);
-	return 0;
-}
-
 static const struct hwmon_channel_info *spd5118_info[] = {
 	HWMON_CHANNEL_INFO(chip,
 			   HWMON_C_REGISTER_TZ),
@@ -566,7 +517,8 @@ static int spd5118_probe(struct i2c_client *client)
 	dev_set_drvdata(dev, data);
 
 	err = spd5118_nvmem_init(dev, data);
-	if (err) {
+	/* Ignore if NVMEM support is disabled */
+	if (err && err != -EOPNOTSUPP) {
 		dev_err_probe(dev, err, "failed to register nvmem\n");
 		return err;
 	}
@@ -636,8 +588,6 @@ static struct i2c_driver spd5118_driver = {
 	},
 	.probe		= spd5118_probe,
 	.id_table	= spd5118_id,
-	.detect		= spd5118_detect,
-	.address_list	= normal_i2c,
 };
 
 module_i2c_driver(spd5118_driver);
